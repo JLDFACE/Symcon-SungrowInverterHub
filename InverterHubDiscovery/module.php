@@ -205,9 +205,9 @@ class InverterHubDiscovery extends IPSModule
                     'items' => [
                         $this->VersionLabel(),
                         ['type' => 'Label', 'caption' => 'Durchsucht einen IP-Bereich im lokalen Netz nach Wechselrichtern auf Modbus-TCP-Port 502 und erkennt den Hersteller anhand weniger typischer Register/Unit-IDs pro Hersteller.'],
-                        ['type' => 'Label', 'caption' => 'Start- und End-IP eintragen (Vorschlag anhand des eigenen Netzwerks ist schon ausgefüllt), dann „Netzwerk durchsuchen" klicken. Gefundene Geräte erscheinen unten in der Liste — Klick auf „Erstellen" legt eine InverterHub-Instanz mit vorausgefüllter IP-Adresse, Unit-ID und Hersteller an.'],
+                        ['type' => 'Label', 'caption' => 'Einfach „Ganzes Subnetz durchsuchen" klicken — das lokale Subnetz wird automatisch erkannt und abgesucht. Gefundene Geräte erscheinen unten in der Liste — Klick auf „Erstellen" legt eine InverterHub-Instanz mit vorausgefüllter IP-Adresse, Unit-ID und Hersteller an.'],
                         ['type' => 'Label', 'caption' => 'Die Suche prüft nur wenige dokumentierte Standard-Unit-IDs je Hersteller, keinen vollen 1-247-Bereich — bei exotisch konfigurierter Unit-ID bitte die InverterHub-Instanz manuell anlegen.'],
-                        ['type' => 'Label', 'caption' => 'Wird ein bekannter Wechselrichter nicht gefunden: einen SCHMALEN Bereich (bis 64 Adressen, z. B. .30–.45) um dessen IP absuchen. Kleine Bereiche nutzen eine langsamere, aber zuverlässigere Port-Prüfung — die große Subnetz-Suche kann unter Windows oder bei langsam antwortenden Geräten (z. B. Sungrow WiNet-S) offene Ports übersehen.'],
+                        ['type' => 'Label', 'caption' => 'Wird ein bekannter Wechselrichter nicht gefunden: unter „Erweitert: manueller IP-Bereich" einen SCHMALEN Bereich (bis 64 Adressen, z. B. .30–.45) um dessen IP absuchen. Kleine Bereiche nutzen eine langsamere, aber zuverlässigere Port-Prüfung — der schnelle Subnetz-Scan kann unter Windows oder bei langsam antwortenden Geräten (z. B. Sungrow WiNet-S) offene Ports übersehen.'],
                         ['type' => 'Label', 'caption' => 'Kombinierte Suche: Ist zusätzlich das Modul „MeterHub" installiert, findet die Suche auch Energiezähler (Janitza, Siemens PAC) und legt sie per „Erstellen" gleich als MeterHub-Instanz an — Wechselrichter und Zähler in einem Durchgang.'],
                         ['type' => 'Label', 'caption' => 'Hinweis: „Filter"/„Aktualisieren" oberhalb und „Erstellen"/„Alle erstellen" unterhalb der Tabelle sind fester Bestandteil der IP-Symcon-Konfigurator-Ansicht selbst — ihre Position lässt sich modulseitig nicht verändern.'],
                     ],
@@ -217,18 +217,12 @@ class InverterHubDiscovery extends IPSModule
                     'caption' => '🔎  Suchbereich',
                     'expanded' => true,
                     'items' => [
-                        ['type' => 'ValidationTextBox', 'name' => 'RangeStart', 'caption' => 'Start-IP', 'validate' => '^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$'],
-                        ['type' => 'ValidationTextBox', 'name' => 'RangeEnd',   'caption' => 'End-IP',   'validate' => '^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$'],
-                        ['type' => 'NumberSpinner', 'name' => 'Port', 'caption' => 'Modbus-TCP-Port', 'minimum' => 1, 'maximum' => 65535],
-                        ['type' => 'ValidationTextBox', 'name' => 'NameTemplate', 'caption' => 'Name-Vorlage (leer = Hersteller + lfd. Nr.)'],
-                        ['type' => 'Label', 'caption' => 'Platzhalter für die Vorlage: {hersteller} {ip} {unitid} {nr} — z.B. "{hersteller} Dach ({ip})"'],
-                        ['type' => 'ValidationTextBox', 'name' => 'IgnoreIPs', 'caption' => 'IPs ignorieren (Komma-getrennt)'],
-                        ['type' => 'Label', 'caption' => 'Diese Adressen werden bei der Suche komplett übersprungen — z.B. RTU/TCP-Konverter oder andere Modbus-Geräte, die sonst fälschlich als Wechselrichter erscheinen würden.'],
+                        ['type' => 'Label', 'caption' => 'Das gesamte lokale Subnetz auf Modbus-TCP-Wechselrichter durchsuchen — keine IP-Eingabe nötig. Das Subnetz wird automatisch erkannt.'],
                         [
                             'type'  => 'RowLayout',
                             'items' => [
-                                ['type' => 'Button', 'name' => 'BtnScan',  'caption' => '🔎  Netzwerk durchsuchen', 'onClick' => 'IHUBD_Discover($id);'],
-                                ['type' => 'Button', 'name' => 'BtnAbort', 'caption' => '✖  Suche abbrechen', 'onClick' => 'IHUBD_AbortScan($id);', 'visible' => false],
+                                ['type' => 'Button', 'name' => 'BtnScanSubnet', 'caption' => '🔎  Ganzes Subnetz durchsuchen', 'onClick' => 'IHUBD_DiscoverSubnet($id);'],
+                                ['type' => 'Button', 'name' => 'BtnAbort',      'caption' => '✖  Suche abbrechen', 'onClick' => 'IHUBD_AbortScan($id);', 'visible' => false],
                             ],
                         ],
                         [
@@ -240,6 +234,22 @@ class InverterHubDiscovery extends IPSModule
                             'current'       => 0,
                             'indeterminate' => false,
                             'visible'       => false,
+                        ],
+                        ['type' => 'NumberSpinner', 'name' => 'Port', 'caption' => 'Modbus-TCP-Port', 'minimum' => 1, 'maximum' => 65535],
+                        ['type' => 'ValidationTextBox', 'name' => 'NameTemplate', 'caption' => 'Name-Vorlage (leer = Hersteller + lfd. Nr.)'],
+                        ['type' => 'Label', 'caption' => 'Platzhalter für die Vorlage: {hersteller} {ip} {unitid} {nr} — z.B. "{hersteller} Dach ({ip})"'],
+                        ['type' => 'ValidationTextBox', 'name' => 'IgnoreIPs', 'caption' => 'IPs ignorieren (Komma-getrennt)'],
+                        ['type' => 'Label', 'caption' => 'Diese Adressen werden bei der Suche komplett übersprungen — z.B. RTU/TCP-Konverter oder andere Modbus-Geräte, die sonst fälschlich als Wechselrichter erscheinen würden.'],
+                        [
+                            'type'    => 'ExpansionPanel',
+                            'caption' => '🛠️  Erweitert: manueller IP-Bereich',
+                            'expanded' => false,
+                            'items' => [
+                                ['type' => 'Label', 'caption' => 'Wird ein Wechselrichter beim Subnetz-Scan nicht gefunden (z. B. eine langsam antwortende Sungrow WiNet-S), hier einen SCHMALEN Bereich (bis 64 Adressen, z. B. .30–.45) um seine IP eintragen und „Bereich durchsuchen" klicken. Kleine Bereiche nutzen eine langsamere, aber zuverlässigere Port-Prüfung.'],
+                                ['type' => 'ValidationTextBox', 'name' => 'RangeStart', 'caption' => 'Start-IP', 'validate' => '^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$'],
+                                ['type' => 'ValidationTextBox', 'name' => 'RangeEnd',   'caption' => 'End-IP',   'validate' => '^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$'],
+                                ['type' => 'Button', 'name' => 'BtnScan', 'caption' => '🔎  Bereich durchsuchen', 'onClick' => 'IHUBD_Discover($id);'],
+                            ],
                         ],
                     ],
                 ],
@@ -354,16 +364,45 @@ class InverterHubDiscovery extends IPSModule
         @$this->UpdateFormField('ScanProgress', 'current', $current);
     }
 
+    // Ein-Klick-Suche über das gesamte lokale /24-Subnetz (.1–.254). Das Subnetz
+    // wird automatisch aus der eigenen IP der SymBox erkannt - keine
+    // Bereichseingabe nötig. Nutzt den schnellen (asynchronen) Portscan; findet
+    // eine sehr träge WiNet-S ausnahmsweise nicht, hilft der manuelle
+    // Schmalbereich unter „Erweitert".
+    public function DiscoverSubnet()
+    {
+        $prefix = $this->guessLocalSubnetPrefix();
+        if ($prefix === '') {
+            $this->ShowProgress('Lokales Subnetz nicht erkannt – bitte den manuellen Bereich unter „Erweitert" verwenden.', 100);
+            $this->SetStatus(104);
+            return;
+        }
+        $ips = [];
+        for ($i = 1; $i <= 254; $i++) {
+            $ips[] = $prefix . '.' . $i;
+        }
+        $this->runScan($ips);
+    }
+
+    // Durchsucht den manuell eingetragenen Start-/End-Bereich (Erweitert-Panel).
     public function Discover()
     {
         $start = $this->ReadPropertyString('RangeStart');
         $end   = $this->ReadPropertyString('RangeEnd');
-        $port  = $this->ReadPropertyInteger('Port');
 
         if ($start === '' || $end === '') {
             $this->SetStatus(104);
             return;
         }
+
+        $this->runScan($this->expandRange($start, $end));
+    }
+
+    // Gemeinsamer Scan-Kern beider Sucharten (Subnetz-Ein-Klick und manueller
+    // Bereich). Erwartet die bereits expandierte IP-Liste.
+    private function runScan(array $ips)
+    {
+        $port = $this->ReadPropertyInteger('Port');
 
         // Abbruch-Flagge zu Beginn zurücksetzen.
         if (@IPS_GetObjectIDByIdent('ScanAbort', $this->InstanceID)) {
@@ -375,12 +414,12 @@ class InverterHubDiscovery extends IPSModule
         // alten Treffer sichtbar).
         $this->WriteAttributeString('ResultsJSON', '[]');
         @$this->UpdateFormField('DiscoveryList', 'values', []);
-        // Start-Button aus, Abbrechen-Button ein (am Scan-Ende stellt ReloadForm
+        // Start-Buttons aus, Abbrechen-Button ein (am Scan-Ende stellt ReloadForm
         // die Ausgangslage wieder her).
+        @$this->UpdateFormField('BtnScanSubnet', 'visible', false);
         @$this->UpdateFormField('BtnScan', 'visible', false);
         @$this->UpdateFormField('BtnAbort', 'visible', true);
 
-        $ips = $this->expandRange($start, $end);
         if (count($ips) > 1024) {
             // Sicherheitslimit gegen versehentlich riesige Bereiche
             $ips = array_slice($ips, 0, 1024);

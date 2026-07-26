@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.75.0-beta.1 (2026-07-26)
+
+- **Sungrow SH-Hybrid: Registerpfad grundlegend korrigiert und erweitert.** An einem SH10RT
+  (WiNet-S) fielen im Hybrid-Pfad viele Werte falsch aus (z. B. „PV-Leistung" = in Wahrheit die
+  Phasenspannung, Energiezähler als −65536-Artefakte). Ursachen und Behebung:
+  - **Automatische Offset-Erkennung** (`detectOffset`): Sungrow-Firmware/-Dongles adressieren
+    uneinheitlich (PDU = Doku-Nummer −1 oder direkt). Der Offset wird nun zur Laufzeit anhand
+    der Phasenspannungen (Doku 5019–5021) bestimmt — behebt die „off-by-one"-Fehlwerte, ohne
+    Geräte mit direkter Adressierung zu brechen.
+  - **32-Bit-Werte jetzt korrekt Low-Word-first** (`u32le`/`s32le`) — der eingebaute Big-Endian-
+    `u32` lieferte hier vertauschte/negative Werte.
+  - **Register auf die maßgebliche SH-Karte umgestellt und live verifiziert:** Phasenspannungen,
+    Gesamt-DC-Leistung, Gesamt-Wirkleistung (13034), Netzleistung (13010), Phasenströme
+    (13031–13033), Batterie (13020–13025), Energie (PV/Netzbezug/Einspeisung/Eigenverbrauch).
+- **Neue Werte:** Innentemperatur (5008), Einspeisung heute/gesamt, Netzbezug heute/gesamt,
+  Eigenverbrauch heute, Batterie-Lade-/Entladeenergie, **Leistung je MPPT-String** (U×I),
+  Leistungsfluss-Klartext (aus 13001-Bits) und eine **Störungs-Boolean**. Betriebsstatus-Enum
+  auf die echten System-State-Codes (13000) umgestellt.
+- **Entfernt** (auf SH unverifizierte/fehlerhafte Register): Smart-Meter-je-Phase (5603) und
+  Backup-Gruppe (5726). Netzbezug/Einspeisung stehen jetzt korrekt in der Energie-Gruppe.
+- **InverterHubDiscovery:** Ein-Klick-Schaltfläche „Ganzes Subnetz durchsuchen" (erkennt das
+  lokale /24 automatisch); die manuelle Start-/End-IP-Eingabe liegt nun im eingeklappten
+  Panel „Erweitert: manueller IP-Bereich".
+
 ## 0.74.0-beta.1 (2026-07-25)
 
 - **Neuer Verbund-Vertrag `IHUBMON_GetDiagnostics($id)`**, mit NRGDashboard abgestimmt: Erster

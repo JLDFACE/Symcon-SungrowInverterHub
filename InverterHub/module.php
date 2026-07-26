@@ -960,9 +960,34 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
 {
     const REG_START_STOP = 13000; // Holding: 0xCF=Start, 0xCE=Stop
 
+    // System-State (Doku 13000). Nicht gelistete Werte zeigt IP-Symcon roh an
+    // (manche Firmware/Modelle liefern zusätzliche, undokumentierte Codes).
     const RUN_STATES = [
-        0 => 'Aus', 1 => 'Läuft', 2 => 'Fehler', 3 => 'Standby',
+        0x2    => 'Stop',
+        0x8    => 'Standby',
+        0x10   => 'Initiales Standby',
+        0x20   => 'Startet',
+        0x40   => 'Läuft',
+        0x100  => 'Störung',
+        0x400  => 'Wartungsmodus',
+        0x800  => 'Erzwungener Modus',
+        0x1000 => 'Inselbetrieb',
+        0x2501 => 'Neustart',
+        0x4000 => 'Externer EMS-Modus',
     ];
+
+    // Leistungsfluss-Text aus den running-state-Bits (Doku 13001).
+    private function flowText(int $bits): string
+    {
+        $parts = [];
+        if ($bits & 0x01) { $parts[] = 'PV-Erzeugung'; }
+        if ($bits & 0x02) { $parts[] = 'Batterie lädt'; }
+        if ($bits & 0x04) { $parts[] = 'Batterie entlädt'; }
+        if ($bits & 0x08) { $parts[] = 'Last aktiv'; }
+        if ($bits & 0x10) { $parts[] = 'Einspeisung'; }
+        if ($bits & 0x20) { $parts[] = 'Netzbezug'; }
+        return $parts ? implode(' · ', $parts) : 'Bereit';
+    }
 
     public function getBaseVars()
     {
@@ -971,23 +996,28 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
             ['riso',        'Isolationswiderstand','F', 'SGW.KOhm',       true,  'pv',     'RO 5071 (kΩ)'],
             ['running_state','Betriebsstatus',   'I', 'SGW.RunState',     true,  'device', 'RO 13000'],
             ['power_flow_status', 'Leistungsfluss-Status', 'I', '',       true,  'device', 'RO 13001'],
+            ['status_text',  'Leistungsfluss',   'S', '',                 true,  'device', 'dekodiert aus 13001'],
+            ['has_fault',    'Störung',          'B', '~Alert',           true,  'errors', 'aus 13000 (System-State 0x100)'],
             ['pv_total',    'PV Gesamtleistung', 'F', 'SGW.Watt',         true,  'pv',     'RO 5017-5018'],
             ['ac_power',    'AC Wirkleistung',   'F', 'SGW.Watt',         true,  'device', 'RO 13034-13035'],
-            ['meter_total', 'Netz Leistung',     'F', 'SGW.Watt',         true,  'grid',   'RO 5601-5602'],
-            ['bat_power',   'Bat. Leistung',     'F', 'SGW.Watt',         true,  'bat',    'RO 5214-5215'],
+            ['meter_total', 'Netz Leistung',     'F', 'SGW.Watt',         true,  'grid',   'RO 13010-13011 (+ Einspeisung / − Bezug)'],
+            ['bat_power',   'Bat. Leistung',     'F', 'SGW.Watt',         true,  'bat',    'RO 13022 (Vorzeichen aus 13001)'],
         ];
     }
 
     public function getOptionalGroups()
     {
         return [
-            'GroupPV' => ['caption' => 'PV-Details (MPPT-Spannung/Strom; String-Modelle SG-CX bis MPPT 12)', 'vars' => [
-                ['mppt1_volt', 'MPPT1 Spannung', 'F', 'SGW.Volt',   false, 'pv', 'RO 5011'],
-                ['mppt1_curr', 'MPPT1 Strom',    'F', 'SGW.Ampere', false, 'pv', 'RO 5012'],
-                ['mppt2_volt', 'MPPT2 Spannung', 'F', 'SGW.Volt',   false, 'pv', 'RO 5013'],
-                ['mppt2_curr', 'MPPT2 Strom',    'F', 'SGW.Ampere', false, 'pv', 'RO 5014'],
-                ['mppt3_volt', 'MPPT3 Spannung', 'F', 'SGW.Volt',   false, 'pv', 'RO 5015'],
-                ['mppt3_curr', 'MPPT3 Strom',    'F', 'SGW.Ampere', false, 'pv', 'RO 5016'],
+            'GroupPV' => ['caption' => 'PV-Details (MPPT-Spannung/Strom/Leistung; String-Modelle SG-CX bis MPPT 12)', 'vars' => [
+                ['mppt1_volt',  'MPPT1 Spannung', 'F', 'SGW.Volt',   false, 'pv', 'RO 5011'],
+                ['mppt1_curr',  'MPPT1 Strom',    'F', 'SGW.Ampere', false, 'pv', 'RO 5012'],
+                ['mppt1_power', 'MPPT1 Leistung', 'F', 'SGW.Watt',   true,  'pv', 'berechnet U×I'],
+                ['mppt2_volt',  'MPPT2 Spannung', 'F', 'SGW.Volt',   false, 'pv', 'RO 5013'],
+                ['mppt2_curr',  'MPPT2 Strom',    'F', 'SGW.Ampere', false, 'pv', 'RO 5014'],
+                ['mppt2_power', 'MPPT2 Leistung', 'F', 'SGW.Watt',   true,  'pv', 'berechnet U×I'],
+                ['mppt3_volt',  'MPPT3 Spannung', 'F', 'SGW.Volt',   false, 'pv', 'RO 5015'],
+                ['mppt3_curr',  'MPPT3 Strom',    'F', 'SGW.Ampere', false, 'pv', 'RO 5016'],
+                ['mppt3_power', 'MPPT3 Leistung', 'F', 'SGW.Watt',   true,  'pv', 'berechnet U×I'],
                 ['mppt4_volt', 'MPPT4 Spannung', 'F', 'SGW.Volt',   false, 'pv', 'RO 5115'],
                 ['mppt4_curr', 'MPPT4 Strom',    'F', 'SGW.Ampere', false, 'pv', 'RO 5116'],
                 ['mppt5_volt', 'MPPT5 Spannung', 'F', 'SGW.Volt',   false, 'pv', 'RO 5117'],
@@ -1011,39 +1041,37 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
                 ['grid_v1',      'Netz Spannung 1', 'F', 'SGW.Volt',   false, 'grid', 'RO 5019'],
                 ['grid_v2',      'Netz Spannung 2', 'F', 'SGW.Volt',   false, 'grid', 'RO 5020'],
                 ['grid_v3',      'Netz Spannung 3', 'F', 'SGW.Volt',   false, 'grid', 'RO 5021'],
-                ['grid_c1',      'Netz Strom 1',    'F', 'SGW.Ampere', false, 'grid', 'RO 5022 (String)'],
-                ['grid_c2',      'Netz Strom 2',    'F', 'SGW.Ampere', false, 'grid', 'RO 5023 (String)'],
-                ['grid_c3',      'Netz Strom 3',    'F', 'SGW.Ampere', false, 'grid', 'RO 5024 (String)'],
+                ['grid_c1',      'Netz Strom 1',    'F', 'SGW.Ampere', false, 'grid', 'RO 13031'],
+                ['grid_c2',      'Netz Strom 2',    'F', 'SGW.Ampere', false, 'grid', 'RO 13032'],
+                ['grid_c3',      'Netz Strom 3',    'F', 'SGW.Ampere', false, 'grid', 'RO 13033'],
                 ['grid_reactive','Blindleistung',    'F', 'SGW.WattReactive', false, 'grid', 'RO 5033-5034'],
                 ['power_factor', 'Power Factor',     'F', 'SGW.PowerFactor',  false, 'grid', 'RO 5035'],
-                ['grid_freq',    'Netzfrequenz',     'F', 'SGW.Hertz',        false, 'grid', 'RO 5242'],
+                ['grid_freq',    'Netzfrequenz',     'F', 'SGW.Hertz',        false, 'grid', 'RO 5036'],
             ]],
-            'GroupBat' => ['caption' => 'Batterie (Spannung, Strom, SOC, SOH, Temperatur)', 'vars' => [
+            'GroupBat' => ['caption' => 'Batterie (Spannung, Strom, SOC, SOH, Temperatur, Lade-/Entladeenergie)', 'vars' => [
                 ['bat_volt', 'Bat. Spannung',    'F', 'SGW.Volt',     false, 'bat', 'RO 13020'],
                 ['bat_curr', 'Bat. Strom',       'F', 'SGW.Ampere',   false, 'bat', 'RO 13021'],
                 ['bat_soc',  'Bat. SOC',         'I', '~Battery.100', true,  'bat', 'RO 13023'],
                 ['bat_soh',  'Bat. SOH',         'I', '~Intensity.100', true, 'bat', 'RO 13024'],
                 ['bat_temp', 'Bat. Temperatur',  'F', '~Temperature', true,  'bat', 'RO 13025'],
+                ['e_bat_charge_day',    'Bat. Ladung heute',    'F', '~Electricity', true, 'bat', 'RO 13012'],
+                ['e_bat_discharge_day', 'Bat. Entladung heute', 'F', '~Electricity', true, 'bat', 'RO 13026'],
             ]],
-            'GroupMeter' => ['caption' => 'Smart Meter (Leistung je Phase)', 'vars' => [
-                ['mt_l1_pwr', 'Meter L1 Leistung', 'F', 'SGW.Watt', true, 'meter', 'RO 5603'],
-                ['mt_l2_pwr', 'Meter L2 Leistung', 'F', 'SGW.Watt', true, 'meter', 'RO 5605'],
-                ['mt_l3_pwr', 'Meter L3 Leistung', 'F', 'SGW.Watt', true, 'meter', 'RO 5607'],
+            'GroupEnergy' => ['caption' => 'Energiezähler (PV, Netzbezug, Einspeisung, Last, Eigenverbrauch)', 'vars' => [
+                ['e_pv_day',          'PV Ertrag heute',      'F', '~Electricity', true, 'energy', 'RO 13002'],
+                ['e_pv_total',        'PV Ertrag gesamt',     'F', '~Electricity', true, 'energy', 'RO 13003-13004'],
+                ['e_export_pv_day',   'Einspeisung heute',    'F', '~Electricity', true, 'energy', 'RO 13005'],
+                ['e_export_pv_total', 'Einspeisung gesamt',   'F', '~Electricity', true, 'energy', 'RO 13006-13007'],
+                ['e_import_day',      'Netzbezug heute',      'F', '~Electricity', true, 'energy', 'RO 13036'],
+                ['e_import_total',    'Netzbezug gesamt',     'F', '~Electricity', true, 'energy', 'RO 13037-13038'],
+                ['load_power',        'Lastleistung',         'F', 'SGW.Watt',     true, 'energy', 'RO 13008-13009'],
+                ['self_cons_today',   'Eigenverbrauch heute', 'F', '~Intensity.100', true, 'energy', 'RO 13029'],
             ]],
-            'GroupEnergy' => ['caption' => 'Energiezähler (PV, Last, Export)', 'vars' => [
-                ['e_pv_day',   'PV Heute',   'F', '~Electricity', true, 'energy', 'RO 13002'],
-                ['e_pv_total', 'PV Gesamt',  'F', '~Electricity', true, 'energy', 'RO 13003-13004'],
-                ['load_power', 'Lastleistung', 'F', 'SGW.Watt',   true, 'energy', 'RO 13008-13009'],
-                ['export_power','Einspeiseleistung', 'F', 'SGW.Watt', true, 'energy', 'RO 13010-13011'],
-            ]],
-            'GroupBackup' => ['caption' => 'Backup / Notstrom (Spannung, Strom, Leistung je Phase)', 'vars' => [
-                ['backup_total', 'Backup Gesamtleistung', 'F', 'SGW.Watt', true, 'backup', 'RO 5726-5727'],
-                ['backup_freq',  'Backup Frequenz',       'F', 'SGW.Hertz', false, 'backup', 'RO 5734'],
-            ]],
-            'GroupDevice' => ['caption' => 'Geräteinformation (Typ, Nennleistung, Seriennummer)', 'vars' => [
+            'GroupDevice' => ['caption' => 'Geräteinformation (Typ, Nennleistung, Seriennummer, Innentemperatur)', 'vars' => [
                 ['dev_type',    'Gerätetyp-Code', 'I', '', false, 'device', 'RO 5000'],
                 ['dev_rated_w', 'Nennleistung',    'I', '', false, 'device', 'RO 5001'],
                 ['dev_sn',      'Seriennummer',    'S', '', false, 'device', 'RO 4990-4999'],
+                ['inv_temp',    'Innentemperatur', 'F', '~Temperature', true, 'device', 'RO 5008'],
             ]],
             'GroupControl' => ['caption' => 'Steuerung (Start/Stop)', 'vars' => [
                 ['ctl_run', 'Wechselrichter Ein/Aus', 'B', '~Switch', false, 'control', 'RW 13000'],
@@ -1078,6 +1106,42 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
         return ['SGW.RunState' => $runState];
     }
 
+    // Erkennt die Adressierungs-Konvention des Geräts. Sungrow-Firmware/-Dongles
+    // sind uneinheitlich: die meisten liefern jedes Register unter der
+    // PDU-Adresse = Doku-Nummer − 1 (Standard-Modbus), einige unter PDU =
+    // Doku-Nummer direkt. Ein falscher Offset verschiebt ALLE Werte um genau ein
+    // Register — die berüchtigten Sungrow-„off-by-one"-Fehlwerte. Wir bestimmen
+    // ihn zur Laufzeit anhand der Phasenspannungen (Doku 5019/5020/5021), die bei
+    // netzgekoppelten Geräten immer anliegen (auch nachts).
+    //   Rückgabe:  -1 = PDU ist Doku-Nummer − 1 (Standard),  0 = PDU ist Doku-Nummer.
+    private function detectOffset($mb): int
+    {
+        $b = $mb->readInput(5018, 4); // deckt PDU 5018..5021 (beide Hypothesen)
+        if ($b === null) {
+            return -1; // Standard-Konvention als sichere Vorgabe
+        }
+        $plaus = function ($v) { return ($v >= 1800 && $v <= 2800) ? 1 : 0; }; // 180–280 V
+        // Offset -1: Phase A/B/C (Doku 5019/5020/5021) liegen auf PDU 5018/5019/5020 = b[0..2]
+        $scoreM1 = $plaus($mb->u16($b, 0)) + $plaus($mb->u16($b, 1)) + $plaus($mb->u16($b, 2));
+        // Offset  0: dieselben liegen auf PDU 5019/5020/5021 = b[1..3]
+        $score0  = $plaus($mb->u16($b, 1)) + $plaus($mb->u16($b, 2)) + $plaus($mb->u16($b, 3));
+        return ($score0 > $scoreM1) ? 0 : -1; // Gleichstand -> Standard (-1)
+    }
+
+    // 32-Bit-Wert aus zwei Registern, niederwertiges Wort ZUERST — Sungrows
+    // Konvention für ALLE 32-Bit-Größen (5000er- wie 13000er-Block). Der
+    // eingebaute $mb->u32() ist Big-Endian und liefert hier vertauschte Werte.
+    private function u32le($regs, int $i): int
+    {
+        return ($regs[$i] ?? 0) | (($regs[$i + 1] ?? 0) << 16);
+    }
+
+    private function s32le($regs, int $i): int
+    {
+        $v = $this->u32le($regs, $i);
+        return ($v >= 0x80000000) ? $v - 0x100000000 : $v;
+    }
+
     public function readFast($mb, $hub)
     {
         // Alle Reads eines Zyklus über EINE Verbindung (Batch): der Sungrow
@@ -1093,100 +1157,104 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
 
     private function readFastInner($mb, $hub)
     {
+        $off = $this->detectOffset($mb);
+
         // String-Wechselrichter (SG-CX/„P2") haben den 13000er-Hybrid-Block NICHT
         // (Modbus-Exception) und legen ihre Daten ausschließlich im 5000er-Block
-        // ab - mit gegenüber den Hybrid-Modellen um 1 nach unten verschobenen
-        // Adressen (Protokoll-Adresse = Sungrow-Doku − 1) und 32-Bit-Werten mit
-        // niederwertigem Wort zuerst. Dafür ein eigener Lesepfad.
-        $probe13000 = $mb->readInput(13000, 2);
-        if ($probe13000 === null) {
+        // ab. Dafür ein eigener, an einem SG125CX-P2 verifizierter Lesepfad.
+        $probe = $mb->readInput(13000 + $off, 2); // Doku 13000 system_state, 13001 running_state
+        if ($probe === null) {
             return $this->readFastString($mb, $hub);
         }
 
-        $dc      = $mb->readInput(5011, 12);   // 5011-5022 (MPPT1-3 + DC total + Grid Volt)
-        $mppt4   = $mb->readInput(5115, 2);    // 5115-5116
-        $reactive= $mb->readInput(5033, 4);    // 5033-5036 (reactive/PF/freq)
-        $battery = $mb->readInput(5214, 2);    // 5214-5215 Bat power wide range
-        $meterTotal = $mb->readInput(5601, 2); // 5601-5602 Meter Active Power (Gesamt, real bestätigt)
-        $meter   = $mb->readInput(5603, 6);    // 5603,5605,5607 (+ Reserve dazwischen) — unbestätigt
-        $running = $probe13000;                // 13000 running state + 13001 power flow
-        $freqhi  = $mb->readInput(5242, 1);    // 5242 high precision freq
-        $sum     = $mb->readInput(13034, 2);   // 13034-13035 total active power
+        // --- 5000er-Block (Echtzeit-Messwerte), Register live an SH10RT verifiziert ---
+        $temp  = $mb->readInput(5008 + $off, 1);   // Doku 5008 Innentemperatur (0,1 °C)
+        $mppt  = $mb->readInput(5011 + $off, 8);   // Doku 5011..5016 MPPT1-3 U/I, 5017/18 DC-Gesamtleistung (U32 LE)
+        $volts = $mb->readInput(5019 + $off, 3);   // Doku 5019..5021 Phasenspannungen
+        $rpf   = $mb->readInput(5033 + $off, 4);   // Doku 5033 Blindleistung (S32), 5035 PF, 5036 Frequenz
+        $riso  = $mb->readInput(5071 + $off, 1);   // Doku 5071 Isolationswiderstand (nicht auf allen Modellen)
 
-        $ok = ($dc !== null);
+        // --- 13000er-Block (SH-Hybrid-spezifisch) ---
+        $active = $mb->readInput(13034 + $off, 2); // Doku 13034 Gesamt-Wirkleistung (S32 LE)
+        $grid   = $mb->readInput(13010 + $off, 2); // Doku 13010 Netzleistung export_power (S32 LE; + Einspeisung / − Bezug)
+        $pcur   = $mb->readInput(13031 + $off, 3); // Doku 13031..13033 Phasenströme
+        $batBlk = $mb->readInput(13020 + $off, 6); // Doku 13020..13025 Batterie
+
+        $ok = ($volts !== null);
         $hub->SetVarBool('connected', $ok);
         if (!$ok) {
             return false;
         }
 
-        if ($running !== null) {
-            $hub->SetVarInt('running_state', $mb->u16($running, 0));
-            $hub->SetVarInt('power_flow_status', $mb->u16($running, 1));
+        // Doku 13000 Betriebszustand, 13001 Leistungsfluss-/Running-Bits.
+        $sysState = $mb->u16($probe, 0);
+        $runBits  = $mb->u16($probe, 1);
+        $hub->SetVarInt('running_state', $sysState);
+        $hub->SetVarInt('power_flow_status', $runBits);
+        $hub->SetVarStr('status_text', $this->flowText($runBits));
+        $hub->SetVarBool('has_fault', ($sysState & 0x100) !== 0); // System-State-Bit „Störung"
+
+        if ($mppt !== null) {
+            $hub->SetVarFloat('pv_total', (float)$this->u32le($mppt, 6)); // Doku 5017/5018
         }
-        $hub->SetVarFloat('pv_total', (float)$mb->u32($dc, 6));
-        $riso = $mb->readInput(5071, 1); // Array-Isolationswiderstand (kΩ)
+        if ($temp !== null) {
+            $hub->SetVarFloat('inv_temp', $mb->s16($temp, 0) / 10.0);
+        }
+        if ($active !== null) {
+            $hub->SetVarFloat('ac_power', (float)$this->s32le($active, 0));
+        }
+        if ($grid !== null) {
+            $hub->SetVarFloat('meter_total', (float)$this->s32le($grid, 0));
+        }
         if ($riso !== null) {
             $hub->SetVarFloat('riso', (float)$mb->u16($riso, 0));
         }
-        if ($sum !== null) {
-            $hub->SetVarFloat('ac_power', (float)$mb->s32($sum, 0));
-        }
-        if ($battery !== null) {
-            $hub->SetVarFloat('bat_power', (float)$mb->s32($battery, 0));
-        }
-        if ($meterTotal !== null) {
-            $hub->SetVarFloat('meter_total', (float)$mb->s32($meterTotal, 0));
+        // Batterieleistung (Basisvariable): Betrag aus Doku 13022, Vorzeichen aus
+        // den running-state-Bits — Bit 1 = Laden (+), Bit 2 = Entladen (−).
+        if ($batBlk !== null) {
+            $rs   = $mb->u16($probe, 1);
+            $mag  = $mb->u16($batBlk, 2);
+            $sign = ($rs & 0x04) ? -1 : 1;
+            $hub->SetVarFloat('bat_power', (float)($sign * $mag));
         }
 
-        if ($hub->GetPropBool('GroupPV')) {
-            $hub->SetVarFloat('mppt1_volt', $mb->u16($dc, 0) / 10.0);
-            $hub->SetVarFloat('mppt1_curr', $mb->u16($dc, 1) / 10.0);
-            $hub->SetVarFloat('mppt2_volt', $mb->u16($dc, 2) / 10.0);
-            $hub->SetVarFloat('mppt2_curr', $mb->u16($dc, 3) / 10.0);
-            $hub->SetVarFloat('mppt3_volt', $mb->u16($dc, 4) / 10.0);
-            $hub->SetVarFloat('mppt3_curr', $mb->u16($dc, 5) / 10.0);
-            if ($mppt4 !== null) {
-                $hub->SetVarFloat('mppt4_volt', $mb->u16($mppt4, 0) / 10.0);
-                $hub->SetVarFloat('mppt4_curr', $mb->u16($mppt4, 1) / 10.0);
-            }
+        if ($hub->GetPropBool('GroupPV') && $mppt !== null) {
+            $v1 = $mb->u16($mppt, 0) / 10.0; $c1 = $mb->u16($mppt, 1) / 10.0;
+            $v2 = $mb->u16($mppt, 2) / 10.0; $c2 = $mb->u16($mppt, 3) / 10.0;
+            $v3 = $mb->u16($mppt, 4) / 10.0; $c3 = $mb->u16($mppt, 5) / 10.0;
+            $hub->SetVarFloat('mppt1_volt', $v1);
+            $hub->SetVarFloat('mppt1_curr', $c1);
+            $hub->SetVarFloat('mppt1_power', round($v1 * $c1)); // Leistung je String = U×I
+            $hub->SetVarFloat('mppt2_volt', $v2);
+            $hub->SetVarFloat('mppt2_curr', $c2);
+            $hub->SetVarFloat('mppt2_power', round($v2 * $c2));
+            $hub->SetVarFloat('mppt3_volt', $v3);
+            $hub->SetVarFloat('mppt3_curr', $c3);
+            $hub->SetVarFloat('mppt3_power', round($v3 * $c3));
         }
 
         if ($hub->GetPropBool('GroupGrid')) {
-            $hub->SetVarFloat('grid_v1', $mb->u16($dc, 9)  / 10.0);
-            $hub->SetVarFloat('grid_v2', $mb->u16($dc, 10) / 10.0);
-            $hub->SetVarFloat('grid_v3', $mb->u16($dc, 11) / 10.0);
-            if ($reactive !== null) {
-                $hub->SetVarFloat('grid_reactive', (float)$mb->s32($reactive, 0));
-                $hub->SetVarFloat('power_factor',  $mb->s16($reactive, 2) / 1000.0);
+            $hub->SetVarFloat('grid_v1', $mb->u16($volts, 0) / 10.0);
+            $hub->SetVarFloat('grid_v2', $mb->u16($volts, 1) / 10.0);
+            $hub->SetVarFloat('grid_v3', $mb->u16($volts, 2) / 10.0);
+            if ($pcur !== null) {
+                $hub->SetVarFloat('grid_c1', $mb->u16($pcur, 0) / 10.0);
+                $hub->SetVarFloat('grid_c2', $mb->u16($pcur, 1) / 10.0);
+                $hub->SetVarFloat('grid_c3', $mb->u16($pcur, 2) / 10.0);
             }
-            if ($freqhi !== null) {
-                $hub->SetVarFloat('grid_freq', $mb->u16($freqhi, 0) / 100.0);
-            }
-        }
-
-        if ($hub->GetPropBool('GroupMeter') && $meter !== null) {
-            $hub->SetVarFloat('mt_l1_pwr', (float)$mb->s32($meter, 0));
-            $hub->SetVarFloat('mt_l2_pwr', (float)$mb->s32($meter, 2));
-            $hub->SetVarFloat('mt_l3_pwr', (float)$mb->s32($meter, 4));
-        }
-
-        if ($hub->GetPropBool('GroupBat')) {
-            $batBlk = $mb->readInput(13020, 7); // 13020-13026
-            if ($batBlk !== null) {
-                $hub->SetVarFloat('bat_volt', $mb->u16($batBlk, 0) / 10.0);
-                $hub->SetVarFloat('bat_curr', $mb->u16($batBlk, 1) / 10.0);
-                $hub->SetVarInt('bat_soc', (int)round($mb->u16($batBlk, 3) / 10.0));
-                $hub->SetVarInt('bat_soh', (int)round($mb->u16($batBlk, 4) / 10.0));
-                $hub->SetVarFloat('bat_temp', $mb->s16($batBlk, 5) / 10.0);
+            if ($rpf !== null) {
+                $hub->SetVarFloat('grid_reactive', (float)$this->s32le($rpf, 0)); // Doku 5033/5034
+                $hub->SetVarFloat('power_factor',  $mb->s16($rpf, 2) / 1000.0);   // Doku 5035
+                $hub->SetVarFloat('grid_freq',     $mb->u16($rpf, 3) / 10.0);     // Doku 5036 (0,1 Hz)
             }
         }
 
-        if ($hub->GetPropBool('GroupBackup')) {
-            $bk = $mb->readInput(5726, 10); // 5726-5735
-            if ($bk !== null) {
-                $hub->SetVarFloat('backup_total', (float)$mb->s32($bk, 0));
-                $hub->SetVarFloat('backup_freq',  $mb->u16($bk, 8) / 100.0);
-            }
+        if ($hub->GetPropBool('GroupBat') && $batBlk !== null) {
+            $hub->SetVarFloat('bat_volt', $mb->u16($batBlk, 0) / 10.0);
+            $hub->SetVarFloat('bat_curr', $mb->u16($batBlk, 1) / 10.0);
+            $hub->SetVarInt('bat_soc', (int)round($mb->u16($batBlk, 3) / 10.0));
+            $hub->SetVarInt('bat_soh', (int)round($mb->u16($batBlk, 4) / 10.0));
+            $hub->SetVarFloat('bat_temp', $mb->s16($batBlk, 5) / 10.0);
         }
 
         return true;
@@ -1259,17 +1327,43 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
 
     public function readSlow($mb, $hub)
     {
-        if ($mb->readInput(13000, 1) === null) {
-            return; // String-WR: Energie kommt aus readFastString (5000er-Block)
-        }
-        if ($hub->GetPropBool('GroupEnergy')) {
-            $e = $mb->readInput(13002, 11); // 13002-13012
-            if ($e !== null) {
-                $hub->SetVarFloat('e_pv_day',   $mb->u16($e, 0) / 10.0);
-                $hub->SetVarFloat('e_pv_total', $mb->u32($e, 1) / 10.0);
-                $hub->SetVarFloat('load_power',   (float)$mb->s32($e, 6));
-                $hub->SetVarFloat('export_power', (float)$mb->s32($e, 8));
+        $mb->beginBatch();
+        try {
+            $off = $this->detectOffset($mb);
+            if ($mb->readInput(13000 + $off, 1) === null) {
+                return; // String-WR: Energie kommt aus readFastString (5000er-Block)
             }
+            if ($hub->GetPropBool('GroupEnergy')) {
+                $e = $mb->readInput(13002 + $off, 8); // Doku 13002..13009
+                if ($e !== null) {
+                    $hub->SetVarFloat('e_pv_day',          $mb->u16($e, 0) / 10.0);     // 13002 (0,1 kWh)
+                    $hub->SetVarFloat('e_pv_total',        $this->u32le($e, 1) / 10.0); // 13003/04 (U32 LE)
+                    $hub->SetVarFloat('e_export_pv_day',   $mb->u16($e, 3) / 10.0);     // 13005
+                    $hub->SetVarFloat('e_export_pv_total', $this->u32le($e, 4) / 10.0); // 13006/07 (U32 LE)
+                    $hub->SetVarFloat('load_power',        (float)$this->s32le($e, 6)); // 13008 (S32 LE, Hauslast)
+                }
+                $imp = $mb->readInput(13036 + $off, 3); // Doku 13036 Netzbezug heute, 13037 gesamt (U32 LE)
+                if ($imp !== null) {
+                    $hub->SetVarFloat('e_import_day',   $mb->u16($imp, 0) / 10.0);
+                    $hub->SetVarFloat('e_import_total', $this->u32le($imp, 1) / 10.0);
+                }
+                $sc = $mb->readInput(13029 + $off, 1); // Doku 13029 Eigenverbrauch heute (0,1 %)
+                if ($sc !== null) {
+                    $hub->SetVarFloat('self_cons_today', $mb->u16($sc, 0) / 10.0);
+                }
+            }
+            if ($hub->GetPropBool('GroupBat')) {
+                $bc = $mb->readInput(13012 + $off, 1); // Doku 13012 Batterie-Ladung aus PV heute
+                if ($bc !== null) {
+                    $hub->SetVarFloat('e_bat_charge_day', $mb->u16($bc, 0) / 10.0);
+                }
+                $bd = $mb->readInput(13026 + $off, 1); // Doku 13026 Batterie-Entladung heute
+                if ($bd !== null) {
+                    $hub->SetVarFloat('e_bat_discharge_day', $mb->u16($bd, 0) / 10.0);
+                }
+            }
+        } finally {
+            $mb->endBatch();
         }
     }
 
@@ -1285,18 +1379,15 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
 
     private function readDeviceInfoInner($mb, $hub)
     {
-        // String-WR (SG-CX/„P2"): Gerätetyp 4999, Nennleistung 5000 (×0,1 kW).
-        // Hybrid-Modelle: Gerätetyp 5000, Nennleistung 5001.
-        if ($mb->readInput(13000, 1) === null) {
-            $dev = $mb->readInput(4999, 2); // 4999 Typ, 5000 Nennleistung
-        } else {
-            $dev = $mb->readInput(5000, 2); // 5000 Typ, 5001 Nennleistung
-        }
+        // Adressierung über die Auto-Erkennung vereinheitlicht: Gerätetyp Doku
+        // 5000, Nennleistung Doku 5001 (0,1 kW), Seriennummer Doku 4990..4999.
+        $off = $this->detectOffset($mb);
+        $dev = $mb->readInput(5000 + $off, 2); // Doku 5000 Typ-Code, 5001 Nennleistung
         if ($dev !== null) {
             $hub->SetVarInt('dev_type',    $mb->u16($dev, 0));
-            $hub->SetVarInt('dev_rated_w', $mb->u16($dev, 1) * 100);
+            $hub->SetVarInt('dev_rated_w', (int)round($mb->u16($dev, 1) * 100)); // 0,1 kW -> W
         }
-        $sn = $mb->readInput(4989, 10); // Seriennummer (UTF-8)
+        $sn = $mb->readInput(4990 + $off, 10); // Doku 4990..4999 Seriennummer (ASCII)
         if ($sn !== null) {
             $hub->SetVarStr('dev_sn', $mb->readStr($sn, 0, 10));
         }
@@ -1305,8 +1396,9 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
     public function writeControl($mb, $hub, $ident, $value)
     {
         if ($ident === 'ctl_run') {
+            $off = $this->detectOffset($mb);
             $val = (bool)$value ? 0xCF : 0xCE;
-            if ($mb->writeSingle(IHUB_SungrowDriver::REG_START_STOP, $val)) {
+            if ($mb->writeSingle(IHUB_SungrowDriver::REG_START_STOP + $off, $val)) {
                 $hub->SetVarBool('ctl_run', (bool)$value);
             }
         }
