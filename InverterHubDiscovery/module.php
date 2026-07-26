@@ -86,14 +86,37 @@ class InverterHubDiscovery extends IPSModule
     // Ermittelt heuristisch die ersten drei Oktette des lokalen Subnetzes
     // (z.B. "192.168.1"), um Start-/End-IP sinnvoll vorzubelegen. Nur ein
     // Vorschlag — der Nutzer kann ihn jederzeit überschreiben.
+    // Ermittelt die eigene LAN-IP zuverlässig — auch unter Linux/SymBox, wo der
+    // Hostname oft auf 127.0.1.1 zeigt (gethostbyname taugt dort nicht). Trick:
+    // eine UDP-„Verbindung" zu einer öffentlichen Adresse herstellen (es werden
+    // KEINE Pakete gesendet) und die vom Betriebssystem gewählte lokale Quell-IP
+    // des Default-Interfaces auslesen. Fällt auf gethostbyname zurück.
+    private function localIp()
+    {
+        $s = @stream_socket_client('udp://8.8.8.8:53', $errno, $errstr, 1);
+        if ($s !== false) {
+            $name = @stream_socket_get_name($s, false); // z. B. "192.168.10.56:54321"
+            @fclose($s);
+            if (is_string($name) && $name !== '') {
+                $ip = preg_replace('/:\d+$/', '', $name);
+                if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+                    return $ip;
+                }
+            }
+        }
+        $ip = @gethostbyname(gethostname());
+        return (is_string($ip) && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) ? $ip : '';
+    }
+
     private function guessLocalSubnetPrefix()
     {
-        $ip = @gethostbyname(gethostname());
-        if ($ip === false || $ip === gethostname()) {
-            return '';
-        }
+        $ip = $this->localIp();
         $parts = explode('.', $ip);
         if (count($parts) !== 4) {
+            return '';
+        }
+        // Loopback (127.x) und APIPA (169.254.x) ausschließen — kein sinnvolles LAN.
+        if ($parts[0] === '127' || ($parts[0] === '169' && $parts[1] === '254')) {
             return '';
         }
         $isPrivate = ($parts[0] === '10')
