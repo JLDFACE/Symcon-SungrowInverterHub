@@ -1065,7 +1065,7 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
                 ['e_import_day',      'Netzbezug heute',      'F', '~Electricity', true, 'energy', 'RO 13036'],
                 ['e_import_total',    'Netzbezug gesamt',     'F', '~Electricity', true, 'energy', 'RO 13037-13038'],
                 ['load_power',        'Lastleistung',         'F', 'SGW.Watt',     true, 'energy', 'RO 13008-13009'],
-                ['self_cons_today',   'Eigenverbrauch heute', 'F', '~Intensity.100', true, 'energy', 'RO 13029'],
+                ['self_cons_today',   'Eigenverbrauch heute', 'I', '~Intensity.100', true, 'energy', 'RO 13029'],
             ]],
             'GroupDevice' => ['caption' => 'Geräteinformation (Typ, Nennleistung, Seriennummer, Innentemperatur)', 'vars' => [
                 ['dev_type',    'Gerätetyp-Code', 'I', '', false, 'device', 'RO 5000'],
@@ -1349,7 +1349,7 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
                 }
                 $sc = $mb->readInput(13029 + $off, 1); // Doku 13029 Eigenverbrauch heute (0,1 %)
                 if ($sc !== null) {
-                    $hub->SetVarFloat('self_cons_today', $mb->u16($sc, 0) / 10.0);
+                    $hub->SetVarInt('self_cons_today', (int)round($mb->u16($sc, 0) / 10.0));
                 }
             }
             if ($hub->GetPropBool('GroupBat')) {
