@@ -993,7 +993,6 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
     {
         return [
             ['connected',   'Verbindung',        'B', '~Alert.Reversed', false, 'errors', ''],
-            ['riso',        'Isolationswiderstand','F', 'SGW.KOhm',       true,  'pv',     'RO 5071 (kΩ)'],
             ['running_state','Betriebsstatus',   'I', 'SGW.RunState',     true,  'device', 'RO 13000'],
             ['power_flow_status', 'Leistungsfluss-Status', 'I', '',       true,  'device', 'RO 13001'],
             ['status_text',  'Leistungsfluss',   'S', '',                 true,  'device', 'dekodiert aus 13001'],
@@ -1001,7 +1000,6 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
             ['pv_total',    'PV Gesamtleistung', 'F', 'SGW.Watt',         true,  'pv',     'RO 5017-5018'],
             ['ac_power',    'AC Wirkleistung',   'F', 'SGW.Watt',         true,  'device', 'RO 13034-13035'],
             ['meter_total', 'Netz Leistung',     'F', 'SGW.Watt',         true,  'grid',   'RO 13010-13011 (+ Einspeisung / − Bezug)'],
-            ['bat_power',   'Bat. Leistung',     'F', 'SGW.Watt',         true,  'bat',    'RO 13022 (Vorzeichen aus 13001)'],
         ];
     }
 
@@ -1048,7 +1046,8 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
                 ['power_factor', 'Power Factor',     'F', 'SGW.PowerFactor',  false, 'grid', 'RO 5035'],
                 ['grid_freq',    'Netzfrequenz',     'F', 'SGW.Hertz',        false, 'grid', 'RO 5036'],
             ]],
-            'GroupBat' => ['caption' => 'Batterie (Spannung, Strom, SOC, SOH, Temperatur, Lade-/Entladeenergie)', 'vars' => [
+            'GroupBat' => ['caption' => 'Batterie (Leistung, Spannung, Strom, SOC, SOH, Temperatur, Lade-/Entladeenergie)', 'vars' => [
+                ['bat_power','Bat. Leistung',    'F', 'SGW.Watt',     true,  'bat', 'RO 13022 (Vorzeichen aus 13001)'],
                 ['bat_volt', 'Bat. Spannung',    'F', 'SGW.Volt',     false, 'bat', 'RO 13020'],
                 ['bat_curr', 'Bat. Strom',       'F', 'SGW.Ampere',   false, 'bat', 'RO 13021'],
                 ['bat_soc',  'Bat. SOC',         'I', '~Battery.100', true,  'bat', 'RO 13023'],
@@ -1056,6 +1055,9 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
                 ['bat_temp', 'Bat. Temperatur',  'F', '~Temperature', true,  'bat', 'RO 13025'],
                 ['e_bat_charge_day',    'Bat. Ladung heute',    'F', '~Electricity', true, 'bat', 'RO 13012'],
                 ['e_bat_discharge_day', 'Bat. Entladung heute', 'F', '~Electricity', true, 'bat', 'RO 13026'],
+            ]],
+            'GroupRiso' => ['caption' => 'Isolationswiderstand (nicht auf allen Modellen/WiNet-S verfügbar)', 'vars' => [
+                ['riso', 'Isolationswiderstand', 'F', 'SGW.KOhm', true, 'pv', 'RO 5071 (kΩ)'],
             ]],
             'GroupEnergy' => ['caption' => 'Energiezähler (PV, Netzbezug, Einspeisung, Last, Eigenverbrauch)', 'vars' => [
                 ['e_pv_day',          'PV Ertrag heute',      'F', '~Electricity', true, 'energy', 'RO 13002'],
@@ -1172,7 +1174,6 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
         $mppt  = $mb->readInput(5011 + $off, 8);   // Doku 5011..5016 MPPT1-3 U/I, 5017/18 DC-Gesamtleistung (U32 LE)
         $volts = $mb->readInput(5019 + $off, 3);   // Doku 5019..5021 Phasenspannungen
         $rpf   = $mb->readInput(5033 + $off, 4);   // Doku 5033 Blindleistung (S32), 5035 PF, 5036 Frequenz
-        $riso  = $mb->readInput(5071 + $off, 1);   // Doku 5071 Isolationswiderstand (nicht auf allen Modellen)
 
         // --- 13000er-Block (SH-Hybrid-spezifisch) ---
         $active = $mb->readInput(13034 + $off, 2); // Doku 13034 Gesamt-Wirkleistung (S32 LE)
@@ -1205,17 +1206,6 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
         }
         if ($grid !== null) {
             $hub->SetVarFloat('meter_total', (float)$this->s32le($grid, 0));
-        }
-        if ($riso !== null) {
-            $hub->SetVarFloat('riso', (float)$mb->u16($riso, 0));
-        }
-        // Batterieleistung (Basisvariable): Betrag aus Doku 13022, Vorzeichen aus
-        // den running-state-Bits — Bit 1 = Laden (+), Bit 2 = Entladen (−).
-        if ($batBlk !== null) {
-            $rs   = $mb->u16($probe, 1);
-            $mag  = $mb->u16($batBlk, 2);
-            $sign = ($rs & 0x04) ? -1 : 1;
-            $hub->SetVarFloat('bat_power', (float)($sign * $mag));
         }
 
         if ($hub->GetPropBool('GroupPV') && $mppt !== null) {
@@ -1252,9 +1242,22 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
         if ($hub->GetPropBool('GroupBat') && $batBlk !== null) {
             $hub->SetVarFloat('bat_volt', $mb->u16($batBlk, 0) / 10.0);
             $hub->SetVarFloat('bat_curr', $mb->u16($batBlk, 1) / 10.0);
+            // Batterieleistung: Betrag aus Doku 13022, Vorzeichen aus den
+            // running-state-Bits (Bit 2 = Entladen → negativ).
+            $sign = ($mb->u16($probe, 1) & 0x04) ? -1 : 1;
+            $hub->SetVarFloat('bat_power', (float)($sign * $mb->u16($batBlk, 2)));
             $hub->SetVarInt('bat_soc', (int)round($mb->u16($batBlk, 3) / 10.0));
             $hub->SetVarInt('bat_soh', (int)round($mb->u16($batBlk, 4) / 10.0));
             $hub->SetVarFloat('bat_temp', $mb->s16($batBlk, 5) / 10.0);
+        }
+
+        // Isolationswiderstand nur, wenn aktiviert — viele WiNet-S liefern das
+        // Register gar nicht (Modbus-Exception), dann bliebe die Variable leer.
+        if ($hub->GetPropBool('GroupRiso')) {
+            $riso = $mb->readInput(5071 + $off, 1); // Doku 5071 (kΩ)
+            if ($riso !== null) {
+                $hub->SetVarFloat('riso', (float)$mb->u16($riso, 0));
+            }
         }
 
         return true;
@@ -1279,9 +1282,11 @@ class IHUB_SungrowDriver implements IHUB_InverterDriverInterface
         $hub->SetVarFloat('ac_power', (float)$u32(30));   // 5030-5031 Wirkleistung (W)
 
         // Isolationsimpedanz gegen Masse (kΩ) - String-Modelle bei 5070.
-        $riso = $mb->readInput(5070, 1);
-        if ($riso !== null) {
-            $hub->SetVarFloat('riso', (float)$mb->u16($riso, 0));
+        if ($hub->GetPropBool('GroupRiso')) {
+            $riso = $mb->readInput(5070, 1);
+            if ($riso !== null) {
+                $hub->SetVarFloat('riso', (float)$mb->u16($riso, 0));
+            }
         }
 
         if ($hub->GetPropBool('GroupPV')) {
