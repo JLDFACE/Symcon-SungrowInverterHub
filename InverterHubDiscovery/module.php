@@ -755,14 +755,24 @@ class InverterHubDiscovery extends IPSModule
                 return $this->looksLikeAsciiText($sn, 4);
 
             case 'sungrow':
-                // Input 5000: Gerätetyp-Code, sollte > 0 sein
+                // Input 5000: Gerätetyp-Code bzw. – bei Doku−1-Adressierung –
+                // Nennleistung; in beiden Fällen > 0.
                 $r = $this->readInput($ip, $port, $unitId, 5000, 1, 1.0);
                 if ($r === null || $r[0] <= 0) {
                     return false;
                 }
-                // Input 4990-4999: Seriennummer (10 Register, UTF-8/ASCII)
-                $sn = $this->readInput($ip, $port, $unitId, 4990, 10, 1.0);
-                return $this->looksLikeAsciiText($sn, 4);
+                // Seriennummer (10 Register, ASCII). Sungrow-WiNet-S adressieren
+                // uneinheitlich: die Doku-Register liegen mal ab PDU 4990, mal ab
+                // PDU 4989 (Doku−1). Beide Startadressen prüfen, sonst werden
+                // „off-by-one"-Geräte (mancher WiNet-S) nicht erkannt — die
+                // Seriennummer kommt an der falschen Startadresse als Nullen.
+                foreach ([4990, 4989] as $snReg) {
+                    $sn = $this->readInput($ip, $port, $unitId, $snReg, 10, 1.0);
+                    if ($this->looksLikeAsciiText($sn, 4)) {
+                        return true;
+                    }
+                }
+                return false;
 
             case 'solis':
                 // Input 33000: Modell-Nr., sollte > 0 sein
