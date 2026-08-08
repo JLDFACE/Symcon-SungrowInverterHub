@@ -4631,6 +4631,332 @@ class IHUB_VictronDriver implements IHUB_InverterDriverInterface
 }
 
 // ---------------------------------------------------------------------------
+// IHUB_ApsystemsDriver — APsystems EZ1-Mikrowechselrichter (EZ1-M/EZ1-Serie)
+//
+// EINZIGER Treiber ohne Modbus: Der EZ1 hat keine Modbus-Schnittstelle, sondern
+// eine lokale HTTP-/JSON-API auf Port 8050. Der übergebene $mb wird deshalb NUR
+// als Träger von Host und Port benutzt (der Hub konstruiert ihn, verbindet aber
+// nicht) - es läuft kein einziger Modbus-Zugriff. Wer hier etwas ändert: NICHT
+// aus einem anderen Treiber kopieren, die Lesepfade haben nichts gemeinsam.
+//
+// Die API muss am Gerät erst freigeschaltet werden: In der App „AP EasyPower"
+// per Bluetooth verbinden (nicht über die Cloud) → Einstellungen → „Lokaler
+// Modus" → aktivieren und „Continuous" wählen. Ohne das ist Port 8050 zu.
+//
+// Endpunkte (alle GET, Antwort {"data":{…},"message":"SUCCESS","deviceId":"…"}):
+//   /getDeviceInfo  deviceId, devVer, ssid, ipAddr, minPower, maxPower
+//   /getOutputData  p1/p2 (W), e1/e2 (kWh heute), te1/te2 (kWh gesamt)
+//   /getMaxPower    maxPower (eingestelltes Einspeiselimit)
+//   /getAlarm       og, isce1, isce2, oe  ("0" = kein Alarm)
+//   /getOnOff       status ("0" = AN, "1" = AUS - INVERTIERT!)
+//
+// Bewusst NICHT umgesetzt (Stand dieser Ausbaustufe): /setMaxPower und
+// /setOnOff. Der Treiber ist rein lesend, getOnOff wird nicht abgefragt.
+//
+// Kein Netzzähler: Der EZ1 misst ausschließlich seine eigene Erzeugung. Es gibt
+// deshalb KEIN meter_total und keine Hauslast - diese Werte hier aus der
+// Erzeugung zu schätzen wäre frei erfunden. Kachel/Monitor zeigen die
+// entsprechenden Kreise dann leer, das ist richtig so.
+//
+// Antwortzeiten: an einem EZ1 (Firmware 1.10.3) gemessen 2,6-9,3 s pro Abruf
+// bei 1,0-3,5 s Verbindungsaufbau - das WLAN-Modul schläft zwischendurch. Die
+// Timeouts unten sind deshalb absichtlich großzügig, und readFast() macht genau
+// EINEN Abruf. Schnell-Intervall bitte auf >= 20 s stellen.
+// ---------------------------------------------------------------------------
+
+class IHUB_ApsystemsDriver implements IHUB_InverterDriverInterface
+{
+    const PORT_DEFAULT     = 8050;
+    const CONNECT_TIMEOUT  = 6.0;  // s - Verbindungsaufbau dauert gemessen bis 3,5 s
+    const READ_TIMEOUT     = 15;   // s - Gesamtantwort dauert gemessen bis 9,3 s
+
+    public function getBaseVars()
+    {
+        return [
+            ['connected',    'Verbindung',        'B', '~Alert.Reversed', false, 'errors', ''],
+            ['pv_total',     'PV Gesamtleistung', 'F', 'APS.Watt',        true,  'pv',     'getOutputData p1+p2'],
+            ['ac_power',     'AC Wirkleistung',   'F', 'APS.Watt',        true,  'device', 'getOutputData p1+p2 (EZ1 meldet je Kanal nur EINEN Leistungswert, DC und AC sind hier identisch)'],
+            ['has_fault',    'Störung',           'B', '~Alert',          true,  'errors', 'getAlarm (og/isce1/isce2/oe)'],
+            ['status_text',  'Status',            'S', '',                true,  'device', 'dekodiert aus getAlarm'],
+        ];
+    }
+
+    public function getOptionalGroups()
+    {
+        return [
+            // Die beiden EZ1-Kanäle bewusst als mppt1/mppt2 benannt: Der
+            // InverterHubMonitor vergleicht unter genau diesen Idents die
+            // Strangleistungen (mppt_string_compare) und findet damit einen
+            // verschatteten oder defekten Kanal ohne Sonderbehandlung.
+            'GroupPV' => ['caption' => 'Kanal-Details (Leistung je Modul-Eingang)', 'vars' => [
+                ['mppt1_power', 'Kanal 1 Leistung', 'F', 'APS.Watt', true, 'pv', 'getOutputData p1'],
+                ['mppt2_power', 'Kanal 2 Leistung', 'F', 'APS.Watt', true, 'pv', 'getOutputData p2'],
+            ]],
+            'GroupEnergy' => ['caption' => 'Energiezähler (Ertrag heute und gesamt, gesamt sowie je Kanal)', 'vars' => [
+                ['e_pv_day',     'PV Ertrag heute',       'F', '~Electricity', true, 'energy', 'getOutputData e1+e2'],
+                ['e_pv_total',   'PV Ertrag gesamt',      'F', '~Electricity', true, 'energy', 'getOutputData te1+te2'],
+                ['e_pv_day_1',   'Kanal 1 Ertrag heute',  'F', '~Electricity', true, 'energy', 'getOutputData e1'],
+                ['e_pv_day_2',   'Kanal 2 Ertrag heute',  'F', '~Electricity', true, 'energy', 'getOutputData e2'],
+                ['e_pv_total_1', 'Kanal 1 Ertrag gesamt', 'F', '~Electricity', true, 'energy', 'getOutputData te1'],
+                ['e_pv_total_2', 'Kanal 2 Ertrag gesamt', 'F', '~Electricity', true, 'energy', 'getOutputData te2'],
+            ]],
+            'GroupErrors' => ['caption' => 'Alarme einzeln (Netzausfall, DC-Kurzschluss je Kanal, Ausgangsfehler)', 'vars' => [
+                ['alarm_offgrid', 'Alarm Netzausfall',            'B', '~Alert', true, 'errors', 'getAlarm og'],
+                ['alarm_dc1',     'Alarm DC-Kurzschluss Kanal 1', 'B', '~Alert', true, 'errors', 'getAlarm isce1'],
+                ['alarm_dc2',     'Alarm DC-Kurzschluss Kanal 2', 'B', '~Alert', true, 'errors', 'getAlarm isce2'],
+                ['alarm_output',  'Alarm Ausgangsfehler',         'B', '~Alert', true, 'errors', 'getAlarm oe'],
+            ]],
+            'GroupDevice' => ['caption' => 'Geräteinformation (Seriennummer, Firmware, WLAN, Nenn-/Mindestleistung, Einspeiselimit)', 'vars' => [
+                ['dev_sn',      'Seriennummer',     'S', '',         false, 'device', 'getDeviceInfo deviceId'],
+                ['dev_fw',      'Firmware',         'S', '',         false, 'device', 'getDeviceInfo devVer'],
+                ['dev_ssid',    'WLAN-Netz',        'S', '',         false, 'device', 'getDeviceInfo ssid'],
+                ['dev_rated_w', 'Nennleistung',     'I', 'APS.WattI', false, 'device', 'getDeviceInfo maxPower'],
+                ['dev_min_w',   'Mindestleistung',  'I', 'APS.WattI', false, 'device', 'getDeviceInfo minPower'],
+                ['power_limit', 'Einspeiselimit',   'I', 'APS.WattI', true,  'device', 'getMaxPower (nur gelesen, dieser Treiber schreibt nicht)'],
+            ]],
+        ];
+    }
+
+    public function getExtraBooleanProperties()
+    {
+        return [];
+    }
+
+    public function getProfiles()
+    {
+        // Bereich bis 2000 W statt der 800 W des EZ1-M, damit größere Modelle
+        // der Serie nicht an der Profilgrenze abgeschnitten werden. Untergrenze
+        // 0: Ein Mikrowechselrichter speist nur ein, er bezieht nie.
+        return [
+            'APS.Watt'  => [VARIABLETYPE_FLOAT,   ' W', 0.0, 2000.0, 1.0, 0],
+            'APS.WattI' => [VARIABLETYPE_INTEGER, ' W', 0.0, 2000.0, 1.0, 0],
+        ];
+    }
+
+    public function getEnumProfiles()
+    {
+        return [];
+    }
+
+    // -----------------------------------------------------------------------
+    // HTTP-Zugriff
+    // -----------------------------------------------------------------------
+
+    // Holt einen Endpunkt und gibt den entpackten "data"-Teil zurück, oder null.
+    // Bewusst mit fsockopen statt curl/file_get_contents: Das Repo spricht
+    // ohnehin überall fsockopen, und wir bleiben unabhängig von der
+    // allow_url_fopen-Einstellung der Installation.
+    private function fetch($mb, string $path)
+    {
+        $host = (string)$mb->host;
+        $port = (int)$mb->port;
+        if ($host === '') {
+            return null;
+        }
+
+        $errno = 0;
+        $errstr = '';
+        $sock = @fsockopen($host, $port, $errno, $errstr, self::CONNECT_TIMEOUT);
+        if ($sock === false) {
+            return null;
+        }
+        stream_set_timeout($sock, self::READ_TIMEOUT);
+
+        $req = 'GET ' . $path . " HTTP/1.1\r\n"
+             . 'Host: ' . $host . ':' . $port . "\r\n"
+             . "Accept: application/json\r\n"
+             . "Connection: close\r\n\r\n";
+        if (@fwrite($sock, $req) === false) {
+            @fclose($sock);
+            return null;
+        }
+
+        // Kopf zeilenweise bis zur Leerzeile lesen.
+        $head = '';
+        while (substr($head, -4) !== "\r\n\r\n") {
+            $line = @fgets($sock, 2048);
+            if ($line === false || $line === '') {
+                break;
+            }
+            $head .= $line;
+            $meta = stream_get_meta_data($sock);
+            if (!empty($meta['timed_out']) || strlen($head) > 8192) {
+                @fclose($sock);
+                return null;
+            }
+        }
+
+        // Nur 200 gilt. Ein nicht freigeschalteter lokaler Modus liefert gar
+        // keine Verbindung, ein falscher Pfad ein 404 mit HTML-Rumpf.
+        if (!preg_match('#^HTTP/1\.[01]\s+(\d{3})#', $head, $m) || (int)$m[1] !== 200) {
+            @fclose($sock);
+            return null;
+        }
+
+        // Rumpf: Das Gerät setzt immer Content-Length (kein Chunked-Encoding),
+        // deshalb exakt so viele Bytes lesen. Das spart pro Abruf das Warten auf
+        // den Verbindungsabbau - bei diesem ohnehin langsamen Gerät spürbar.
+        $len  = preg_match('#Content-Length:\s*(\d+)#i', $head, $m) ? (int)$m[1] : 0;
+        $body = '';
+        if ($len > 0) {
+            while (strlen($body) < $len) {
+                $chunk = @fread($sock, $len - strlen($body));
+                if ($chunk === false || $chunk === '') {
+                    break;
+                }
+                $body .= $chunk;
+                $meta = stream_get_meta_data($sock);
+                if (!empty($meta['timed_out'])) {
+                    break;
+                }
+            }
+        } else {
+            while (!feof($sock)) {
+                $chunk = @fread($sock, 4096);
+                if ($chunk === false || $chunk === '') {
+                    break;
+                }
+                $body .= $chunk;
+                if (strlen($body) > 65536) {
+                    break;
+                }
+            }
+        }
+        @fclose($sock);
+
+        // Auf "message" prüfen, nicht nur auf HTTP 200: Das Gerät antwortet auch
+        // bei fachlichen Fehlern mit 200 und meldet sie erst im JSON.
+        $json = json_decode($body, true);
+        if (!is_array($json)
+            || !isset($json['message']) || $json['message'] !== 'SUCCESS'
+            || !isset($json['data']) || !is_array($json['data'])) {
+            return null;
+        }
+        return $json['data'];
+    }
+
+    // Die API liefert Zahlen teils als String ("800"), teils als echte Zahl
+    // (187). Beides über eine Stelle normalisieren.
+    private function num($v): float
+    {
+        return is_numeric($v) ? (float)$v : 0.0;
+    }
+
+    // Alarmfelder kommen als "0"/"1"-Strings.
+    private function flag($v): bool
+    {
+        return $this->num($v) != 0.0;
+    }
+
+    // -----------------------------------------------------------------------
+    // Lesepfade
+    // -----------------------------------------------------------------------
+
+    public function readFast($mb, $hub)
+    {
+        // Genau EIN Abruf pro Zyklus. Alles Weitere liegt in readSlow(), weil
+        // jeder zusätzliche Abruf das Zyklusbudget um mehrere Sekunden erhöht.
+        $d = $this->fetch($mb, '/getOutputData');
+
+        $ok = ($d !== null);
+        $hub->SetVarBool('connected', $ok);
+        if (!$ok) {
+            return false;
+        }
+
+        $p1 = $this->num($d['p1'] ?? 0);
+        $p2 = $this->num($d['p2'] ?? 0);
+
+        $hub->SetVarFloat('pv_total', $p1 + $p2);
+        $hub->SetVarFloat('ac_power', $p1 + $p2);
+
+        if ($hub->GetPropBool('GroupPV')) {
+            $hub->SetVarFloat('mppt1_power', $p1);
+            $hub->SetVarFloat('mppt2_power', $p2);
+        }
+
+        // Die Energiewerte kommen aus derselben Antwort - sie hier mitzunehmen
+        // kostet nichts und erspart readSlow() einen eigenen Abruf.
+        if ($hub->GetPropBool('GroupEnergy')) {
+            $e1  = $this->num($d['e1'] ?? 0);
+            $e2  = $this->num($d['e2'] ?? 0);
+            $te1 = $this->num($d['te1'] ?? 0);
+            $te2 = $this->num($d['te2'] ?? 0);
+            $hub->SetVarFloat('e_pv_day',     $e1 + $e2);
+            $hub->SetVarFloat('e_pv_total',   $te1 + $te2);
+            $hub->SetVarFloat('e_pv_day_1',   $e1);
+            $hub->SetVarFloat('e_pv_day_2',   $e2);
+            $hub->SetVarFloat('e_pv_total_1', $te1);
+            $hub->SetVarFloat('e_pv_total_2', $te2);
+        }
+
+        return true;
+    }
+
+    public function readSlow($mb, $hub)
+    {
+        // Alarme: füllen has_fault und status_text (beides Basisvariablen), die
+        // Einzelflags nur bei aktivierter Gruppe.
+        $a = $this->fetch($mb, '/getAlarm');
+        if ($a !== null) {
+            $offgrid = $this->flag($a['og']    ?? 0);
+            $dc1     = $this->flag($a['isce1'] ?? 0);
+            $dc2     = $this->flag($a['isce2'] ?? 0);
+            $out     = $this->flag($a['oe']    ?? 0);
+
+            $hub->SetVarBool('has_fault', $offgrid || $dc1 || $dc2 || $out);
+
+            $parts = [];
+            if ($offgrid) { $parts[] = 'Netzausfall'; }
+            if ($dc1)     { $parts[] = 'DC-Kurzschluss Kanal 1'; }
+            if ($dc2)     { $parts[] = 'DC-Kurzschluss Kanal 2'; }
+            if ($out)     { $parts[] = 'Ausgangsfehler'; }
+            $hub->SetVarStr('status_text', $parts ? implode(' · ', $parts) : 'Normalbetrieb');
+
+            if ($hub->GetPropBool('GroupErrors')) {
+                $hub->SetVarBool('alarm_offgrid', $offgrid);
+                $hub->SetVarBool('alarm_dc1',     $dc1);
+                $hub->SetVarBool('alarm_dc2',     $dc2);
+                $hub->SetVarBool('alarm_output',  $out);
+            }
+        }
+
+        // Einspeiselimit nur lesen, wenn die Gerätegruppe überhaupt an ist -
+        // sonst wäre es ein Abruf für eine Variable, die es gar nicht gibt.
+        if ($hub->GetPropBool('GroupDevice')) {
+            $mp = $this->fetch($mb, '/getMaxPower');
+            if ($mp !== null && isset($mp['maxPower'])) {
+                $hub->SetVarInt('power_limit', (int)round($this->num($mp['maxPower'])));
+            }
+        }
+    }
+
+    public function readDeviceInfo($mb, $hub)
+    {
+        if (!$hub->GetPropBool('GroupDevice')) {
+            return;
+        }
+        $d = $this->fetch($mb, '/getDeviceInfo');
+        if ($d === null) {
+            return;
+        }
+        $hub->SetVarStr('dev_sn',   (string)($d['deviceId'] ?? ''));
+        $hub->SetVarStr('dev_fw',   (string)($d['devVer']   ?? ''));
+        $hub->SetVarStr('dev_ssid', (string)($d['ssid']     ?? ''));
+        $hub->SetVarInt('dev_rated_w', (int)round($this->num($d['maxPower'] ?? 0)));
+        $hub->SetVarInt('dev_min_w',   (int)round($this->num($d['minPower'] ?? 0)));
+    }
+
+    public function writeControl($mb, $hub, $ident, $value)
+    {
+        // Bewusst leer: Dieser Treiber ist rein lesend. Das Gerät könnte über
+        // /setMaxPower (Einspeiselimit) und /setOnOff gesteuert werden - beides
+        // ist hier nicht umgesetzt. Es gibt entsprechend keine GroupControl,
+        // damit meldet GetFunctions() korrekt controllable = false.
+    }
+}
+
+// ---------------------------------------------------------------------------
 // InverterHub — Hauptmodul, lädt den Treiber laut Manufacturer-Property
 // ---------------------------------------------------------------------------
 
@@ -4651,6 +4977,7 @@ class InverterHub extends IPSModule
         'victron'   => 'IHUB_VictronDriver',
         'huawei'    => 'IHUB_HuaweiDriver',
         'foxess'    => 'IHUB_FoxEssDriver',
+        'apsystems' => 'IHUB_ApsystemsDriver',
     ];
 
     private const FORUM_THREAD_URL = 'https://community.symcon.de/t/beta-tester-gesucht-inverterhub-multi-wechselrichter-ein-modbus-tcp-modul-fuer-goodwe-sma-fronius-sungrow-solis-growatt-solax/144121';
@@ -5156,6 +5483,8 @@ class InverterHub extends IPSModule
                         ['type' => 'Label', 'caption' => '• Huawei SUN2000: Port 502, Unit-ID meist 1 (je nach Konfiguration auch 0/16). Modbus TCP im Wechselrichter aktivieren.'],
                         ['type' => 'Label', 'caption' => '• Fronius: Der Smart Meter ist ein eigenes Modbus-Gerät mit eigener Unit-ID – über das Feld „Smart-Meter-Adresse" einstellbar (Vorgabe 200, je nach Konfiguration z. B. 240).'],
                         ['type' => 'Label', 'caption' => '• SolaX: Der Wechselrichter selbst spricht nur Modbus RTU. Modbus TCP läuft nur über ein zusätzliches SolaX-Monitoring-Modul (Pocket WiFi/LAN) als Gateway – dessen IP-Adresse eintragen, nicht die des Wechselrichters.'],
+                        ['type' => 'Label', 'caption' => '• APsystems EZ1: Kein Modbus — das Gerät spricht eine lokale HTTP-API auf **Port 8050** (Unit-ID wird ignoriert). Der lokale Modus muss erst am Gerät freigeschaltet werden: App „AP EasyPower" per Bluetooth verbinden (nicht über die Cloud) → Einstellungen → „Lokaler Modus" → aktivieren und „Continuous" wählen. Ältere Firmware (1.1.1) kennt den Menüpunkt nicht und muss zuerst aktualisiert werden. Solange der lokale Modus läuft, sendet der EZ1 nichts mehr in die APsystems-Cloud.'],
+                        ['type' => 'Label', 'caption' => '• APsystems EZ1 — Intervall: Das Gerät antwortet langsam (gemessen 2,6–9,3 s je Abruf, WLAN-Energiesparmodus). Schnell-Intervall bitte auf mindestens 20 s stellen, sonst überholen sich die Abfragen. Der EZ1 hat außerdem KEINEN Netzzähler: Netz-, Hauslast- und Batteriewerte bleiben leer — dafür braucht es einen echten Zähler (MeterHub).'],
                         ['type' => 'Label', 'caption' => 'ℹ️ Vorzeichen-Konvention (modulweit): Batterie + = Entladen / − = Laden; Netz-Meter + = Einspeisung / − = Bezug. Stimmt eine Richtung an der eigenen Anlage nicht, hilft der jeweilige Invers-Schalter unten – die InverterHubTile-Kachel bleibt dabei automatisch korrekt.'],
                         ['type' => 'Label', 'caption' => '🛡️ Isolationswiderstand (Riso): bei GoodWe, Huawei, Sungrow, SMA und Kostal verfügbar; bei Growatt optional (modellabhängig). Reine SunSpec-Geräte (Fronius/SolarEdge) liefern ihn nicht.'],
                         ['type' => 'Label', 'caption' => 'Registeradressen stehen im Beschreibungsfeld jeder Variable (Objekt-Manager, Spalte „Beschreibung").'],
@@ -5185,6 +5514,7 @@ class InverterHub extends IPSModule
                         ['label' => 'Victron GX (Cerbo/Venus OS, Unit-ID 100)', 'value' => 'victron'],
                         ['label' => 'Huawei SUN2000 (+ DTSU666 / LUNA2000, Unit-ID meist 1)', 'value' => 'huawei'],
                         ['label' => 'FoxESS H1/H3 (Read-Only-Vorabversion, Beta)', 'value' => 'foxess'],
+                        ['label' => 'APsystems EZ1 (Mikrowechselrichter, HTTP statt Modbus — Port 8050!)', 'value' => 'apsystems'],
                     ],
                 ],
                 [

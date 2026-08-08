@@ -1,7 +1,9 @@
 # InverterHub
 
-IP-Symcon-Modul, das Wechselrichter verschiedener Hersteller direkt per **Modbus TCP** ausliest
-und steuert — ein generisches Treiber-Framework statt eines Moduls pro Hersteller.
+IP-Symcon-Modul, das Wechselrichter verschiedener Hersteller direkt im lokalen Netz ausliest
+und steuert — ein generisches Treiber-Framework statt eines Moduls pro Hersteller. Die
+Anbindung läuft überwiegend per **Modbus TCP**; APsystems EZ1 bildet die Ausnahme und wird
+über seine lokale **HTTP-/JSON-API** gelesen.
 
 **Status: Beta.** Die Register-Zuordnungen basieren auf den öffentlich verfügbaren
 Modbus-Protokolldokumenten der Hersteller und wurden, soweit möglich, gegen reale Anlagen
@@ -31,6 +33,7 @@ Register melden.
 | **SMA** | PV Gesamtleistung, Netz, Meter, Energie, Temperatur, Status, Gerätename/Seriennummer | Reine SunSpec-Implementierung mit Laufzeit-Discovery, wie von OpenEMS für SMA Sunny Tripower verwendet |
 | **Fronius** | PV (MPPT: Spannung/Strom/Leistung je String), Netz, Meter (Gesamt + optional je Phase U/I/P), Energie, Batterie (GEN24-Hybrid: SOC als Float, Leistung, Spannung), Status, Gerätename/Seriennummer | Reine SunSpec-Implementierung mit Laufzeit-Discovery (keine festen Registeradressen, siehe unten). Der Smart Meter ist ein eigenes Modbus-Gerät mit eigener Unit-ID („Smart-Meter-Adresse", Vorgabe 200, je nach Konfiguration z. B. 240 — im Datenpunkte-Panel einstellbar). Im Wechselrichter muss der Modbus-Server (TCP) aktiviert sein; „Steuerung erlauben" ist nicht nötig, das Modul liest nur. |
 | **Victron GX** | PV (DC + AC-gekoppelt, optional je Solarladeregler/MPPT), Netz, Batterie (SOC/Leistung/Spannung/Strom/Zustand), Hausverbrauch, Netz-Quelle | Liest den aggregierten Systemdienst `com.victronenergy.system` (Cerbo GX / Venus OS). **Wichtig:** Unit-ID ist bei Victron ein Geräte-Selektor — der Systemdienst liegt fest auf **100**, das Modul spricht diese automatisch an (die im Formular gesetzte Unit-ID wird bei Victron ignoriert). Port **502**. Im GX unter Einstellungen → Services → Modbus TCP aktivieren. Noch nicht am realen Gerät verifiziert — Vorzeichen von Netz/Batterie ggf. per Invers-Schalter anpassen. |
+| **APsystems EZ1** | Leistung gesamt und je Kanal, Ertrag heute/gesamt (gesamt und je Kanal), Alarme (Netzausfall, DC-Kurzschluss je Kanal, Ausgangsfehler), Geräteinformation, Einspeiselimit (nur gelesen) | **Kein Modbus** — der EZ1 spricht eine lokale HTTP-/JSON-API auf Port **8050**; die Unit-ID wird ignoriert. Der lokale Modus muss erst am Gerät freigeschaltet werden: App „AP EasyPower" **per Bluetooth** verbinden (nicht über die Cloud) → Einstellungen → „Lokaler Modus" → aktivieren und „Continuous" wählen; Firmware 1.1.1 kennt den Menüpunkt noch nicht. Solange der lokale Modus läuft, sendet der EZ1 nichts mehr in die APsystems-Cloud. **Rein lesend** (kein `/setMaxPower`, kein `/setOnOff`). **Kein Netzzähler** — Netz-, Hauslast- und Batteriewerte bleiben leer, dafür braucht es einen echten Zähler. Das Gerät antwortet langsam (2,6–9,3 s je Abruf): Schnell-Intervall auf mindestens **20 s** stellen. An einem EZ1-M mit Firmware 1.10.3 live verifiziert. |
 | **Huawei SUN2000** | PV (DC-Eingang), Netz, Wirkleistung, Temperatur, Status, Energie, Smart Meter (DTSU666), Batterie (LUNA2000: SOC/Leistung/Spannung/Strom/Temperatur/Zustand) | Native Huawei-Registermap (kein SunSpec), Register/Gain aus `huawei-solar-lib`. Unit-ID des Wechselrichters ist meist **1** (je nach Konfiguration auch 0/16 — im Wechselrichter unter Modbus TCP einstellbar), Port **502**. Modbus TCP muss im Gerät aktiviert sein. Noch nicht am realen Gerät verifiziert — Vorzeichen von Netz/Batterie ggf. per Invers-Schalter anpassen. |
 
 Registeradressen stehen im **Beschreibungsfeld** jeder Variable (Objekt-Manager, Spalte
@@ -44,14 +47,20 @@ Die eigentliche Datenauslese-Instanz. Ein Modul, ein `Manufacturer`-Auswahlfeld 
 gewähltem Hersteller werden die passenden Datenpunkt-Gruppen (Checkboxen) und Register
 freigeschaltet. Architektur:
 
-- **`ModbusTcpClient`** — gemeinsame Modbus-TCP-Grundfunktionen (Read Holding/Input Register,
-  Write Single/Multiple, Datentyp-Hilfsfunktionen), von allen Treibern genutzt.
-- **`InverterDriverInterface`** — Vertrag, den jeder Hersteller-Treiber erfüllt (Basisvariablen,
+- **`IHUB_ModbusTcpClient`** — gemeinsame Modbus-TCP-Grundfunktionen (Read Holding/Input Register,
+  Write Single/Multiple, Datentyp-Hilfsfunktionen), von allen Modbus-Treibern genutzt.
+- **`IHUB_InverterDriverInterface`** — Vertrag, den jeder Hersteller-Treiber erfüllt (Basisvariablen,
   optionale Gruppen, Profile, `readFast`/`readSlow`/`readDeviceInfo`/`writeControl`).
-- **Ein Treiber je Hersteller** (`GoodweDriver`, `SungrowDriver`, `SolisDriver`, `GrowattDriver`,
-  `SolaxDriver`, `SmaDriver`, `FroniusDriver`, `SolarEdgeDriver`, `DeyeDriver`, `SolplanetDriver`,
-  `KostalDriver`, `VictronDriver`, `HuaweiDriver`) — kapselt die herstellerspezifischen
-  Registeradressen, Skalierungsfaktoren und Eigenheiten.
+- **Ein Treiber je Hersteller** (`IHUB_GoodweDriver`, `IHUB_SungrowDriver`, `IHUB_SolisDriver`,
+  `IHUB_GrowattDriver`, `IHUB_SolaxDriver`, `IHUB_SmaDriver`, `IHUB_FroniusDriver`,
+  `IHUB_SolarEdgeDriver`, `IHUB_DeyeDriver`, `IHUB_SolplanetDriver`, `IHUB_KostalDriver`,
+  `IHUB_VictronDriver`, `IHUB_HuaweiDriver`, `IHUB_FoxEssDriver`, `IHUB_ApsystemsDriver`) —
+  kapselt die herstellerspezifischen Registeradressen, Skalierungsfaktoren und Eigenheiten.
+
+  Der Transport ist dabei Sache des Treibers, nicht des Interfaces: `IHUB_ApsystemsDriver`
+  bekommt denselben Modbus-Client übergeben wie alle anderen, nutzt ihn aber ausschließlich als
+  Träger von Host und Port und spricht selbst HTTP. Wer einen weiteren Treiber ohne Modbus baut,
+  kann sich daran orientieren — der Hub konstruiert den Client nur und verbindet nicht.
 
 Einrichtung: Instanz anlegen, Hersteller wählen, IP-Adresse (und bei Bedarf Port/Unit-ID)
 eintragen, gewünschte Datenpunkt-Gruppen aktivieren, übernehmen.

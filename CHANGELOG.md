@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.76.0-beta.1 (2026-08-08)
+
+- **Neuer Hersteller: APsystems EZ1** (Mikrowechselrichter der EZ1-/EZ1-M-Serie), rein lesend.
+  Der erste Treiber im Modul, der **kein Modbus** spricht: Der EZ1 hat keine
+  Modbus-Schnittstelle, sondern eine lokale HTTP-/JSON-API auf **Port 8050**. Der Treiber nutzt
+  den übergebenen Modbus-Client ausschließlich als Träger von Host und Port und macht keinen
+  einzigen Modbus-Zugriff.
+  - **Werte:** Gesamtleistung und Leistung je Kanal, Ertrag heute/gesamt (gesamt und je Kanal),
+    Alarme (Netzausfall, DC-Kurzschluss je Kanal, Ausgangsfehler) als Sammel-Boolean, Klartext
+    und optional einzeln, Geräteinformation (Seriennummer, Firmware, WLAN, Nenn-/Mindestleistung)
+    sowie das eingestellte Einspeiselimit.
+  - **Die beiden Kanäle liegen bewusst auf `mppt1_power`/`mppt2_power`**, damit der
+    Strangvergleich des `InverterHubMonitor` (`mppt_string_compare`) einen verschatteten oder
+    defekten Kanal ohne Sonderbehandlung findet.
+  - **Kein Netzzähler:** Der EZ1 misst nur seine eigene Erzeugung. Es gibt deshalb bewusst kein
+    `meter_total` und keine Hauslast — diese Größen aus der Erzeugung zu schätzen wäre erfunden.
+    Netz-/Hauslast-/Batteriekreise der Kachel bleiben bei einer reinen EZ1-Anlage leer.
+  - **Keine Steuerung:** `/setMaxPower` und `/setOnOff` sind nicht umgesetzt, es gibt keine
+    `GroupControl` — `IHUB_GetFunctions` meldet damit korrekt `controllable = false`.
+  - **Einrichtung:** Der lokale Modus muss erst am Gerät freigeschaltet werden (App
+    „AP EasyPower" → per Bluetooth verbinden, nicht über die Cloud → Einstellungen →
+    „Lokaler Modus" → aktivieren, „Continuous"). Firmware 1.1.1 kennt den Menüpunkt noch nicht.
+  - **Intervall:** Das Gerät antwortet langsam (an Firmware 1.10.3 gemessen 2,6–9,3 s je Abruf
+    bei 1,0–3,5 s Verbindungsaufbau). `readFast()` macht deshalb genau **einen** Abruf;
+    Schnell-Intervall bitte auf mindestens 20 s stellen.
+- **Neues Prüfskript `.tools/test-apsystems.php`** — fährt den Treiber gegen ein echtes Gerät,
+  schneidet die Klasse dafür aus `module.php` heraus (testet also den echten Code, keine Kopie)
+  und prüft: kein Modbus-Zugriff, jeder gesetzte Ident deklariert und umgekehrt, Summen
+  schlüssig, und bei nicht erreichbarem Gerät sauberes `false`/`connected = false` ohne
+  zurückbleibende Messwerte. `php -l` und die beiden anderen Prüfer sehen von einem HTTP-Pfad
+  nichts — dieser Test schließt die Lücke.
+
 ## 0.75.0-beta.1 (2026-07-26)
 
 - **Sungrow SH-Hybrid: Registerpfad grundlegend korrigiert und erweitert.** An einem SH10RT
